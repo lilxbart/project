@@ -43,13 +43,20 @@ def insert_vacancy(cursor, vacancy):
         ))
 
 #парсинг с hh.ru
-def parse_hh_vacancies(query):
+def parse_hh_vacancies(query, salary_from=None, salary_to=None, employment=None):
     url = 'https://api.hh.ru/vacancies'
     params = {
         'text': query,
-        'area': 1,  #Москва
+        'area': 1,
         'per_page': 10
     }
+    if salary_from:
+        params['salary_from'] = salary_from
+    if salary_to:
+        params['salary_to'] = salary_to
+    if employment:
+        params['employment'] = employment
+
     response = requests.get(url, params=params)
     data = response.json()
 
@@ -100,15 +107,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_text = update.message.text
     if user_text.startswith('/'):
         return
-    await update.message.reply_text(f'Ищу вакансии по запросу: {user_text}')
+
+    salary_from = None
+    salary_to = None
+    employment = None
+
+    if 'salary_from:' in user_text:
+        salary_from = int(user_text.split('salary_from:')[1].split()[0])
+    if 'salary_to:' in user_text:
+        salary_to = int(user_text.split('salary_to:')[1].split()[0])
+    if 'employment:' in user_text:
+        employment = user_text.split('employment:')[1].split()[0]
+
+    query = user_text.split('salary_from:')[0].split('salary_to:')[0].split('employment:')[0].strip()
+
+    await update.message.reply_text(
+        f'Ищу вакансии по запросу: {query}, Зарплата от: {salary_from}, Зарплата до: {salary_to}, Занятость: {employment}')
+
+
 
     #парсинг
-    parse_hh_vacancies(user_text)
+    parse_hh_vacancies(query, salary_from, salary_to, employment)
 
     #поиск в бд и отправка результатов пользователю
-    vacancies = search_vacancies(user_text)
+    vacancies = search_vacancies(query, salary_from, salary_to, employment)
     total_vacancies = len(vacancies)
-    await update.message.reply_text(f'Найдено {total_vacancies} вакансий по запросу: {user_text}')
+    await update.message.reply_text(f'Найдено {total_vacancies} вакансий по запросу: {query}')
 
     if vacancies:
         for vacancy in vacancies:
@@ -118,14 +142,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.info(f"Сообщение '{user_text}' обработано")
 
 #поиск вакансий в бд
-def search_vacancies(job_title):
+def search_vacancies(job_title, salary_from=None, salary_to=None, employment=None):
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("""
+
+    query = """
         SELECT title, skills, work_format, salary, location, experience_level
         FROM vacancies
         WHERE title ILIKE %s
-    """, (f'%{job_title}%',))
+    """
+    params = [f'%{job_title}%']
+
+    if salary_from is not None:
+        query += " AND salary >= %s"
+        params.append(salary_from)
+    if salary_to is not None:
+        query += " AND salary <= %s"
+        params.append(salary_to)
+    if employment is not None:
+        query += " AND work_format = %s"
+        params.append(employment)
+
+    cursor.execute(query, tuple(params))
     results = cursor.fetchall()
     cursor.close()
     conn.close()
