@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres
+    environment:
+      POSTGRES_DB: work
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 89168117733
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  bot:
+    build: ./bot
+    environment:
+      - DATABASE_HOST=host.docker.internal
+      - DATABASE_NAME=work
+      - DATABASE_USER=postgres
+      - DATABASE_PASSWORD=89168117733
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
