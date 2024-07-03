@@ -1,6 +1,7 @@
 import logging
-from telegram import Update, ForceReply, BotCommand
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, ForceReply, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+
 import psycopg2
 import requests
 
@@ -86,11 +87,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         'Доступные команды:\n/start - Начать диалог\n/help - Помощь\n/search - Поиск вакансий\n/info - Информация о боте')
     logger.info("Команда /help обработана")
 
-#/search
-async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text('Введите название должности для поиска вакансий:')
-    logger.info("Команда /search обработана")
-
 #/info
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -102,28 +98,61 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     logger.info("Команда /info обработана")
 
-#обработка текста
+
+#/search
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        'Введите название должности для поиска вакансий или выберите фильтр ниже:',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Указать зарплату", callback_data='filter_salary')],
+            [InlineKeyboardButton("Указать тип занятости", callback_data='filter_employment')],
+            [InlineKeyboardButton("Начать поиск", callback_data='start_search')]
+        ])
+    )
+    logger.info("Команда /search обработана")
+
+
+#обработка выбора фильтров
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == 'filter_salary':
+        await query.edit_message_text(text="Введите минимальную и максимальную зарплату через пробел:")
+        context.user_data['filter'] = 'salary'
+    elif query.data == 'filter_employment':
+        await query.edit_message_text(text="Введите тип занятости (например, full_time, part_time):")
+        context.user_data['filter'] = 'employment'
+    elif query.data == 'start_search':
+        await query.edit_message_text(text="Введите название должности для поиска:")
+        context.user_data['filter'] = 'search'
+
+
+#обработка текста с фильтрами
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_text = update.message.text
-    if user_text.startswith('/'):
-        return
 
-    salary_from = None
-    salary_to = None
-    employment = None
+    if 'filter' in context.user_data:
+        filter_type = context.user_data['filter']
 
-    if 'salary_from:' in user_text:
-        salary_from = int(user_text.split('salary_from:')[1].split()[0])
-    if 'salary_to:' in user_text:
-        salary_to = int(user_text.split('salary_to:')[1].split()[0])
-    if 'employment:' in user_text:
-        employment = user_text.split('employment:')[1].split()[0]
+        if filter_type == 'salary':
+            salary_from, salary_to = map(int, user_text.split())
+            context.user_data['salary_from'] = salary_from
+            context.user_data['salary_to'] = salary_to
+            await update.message.reply_text("Введите название должности для поиска:")
+            context.user_data['filter'] = 'search'
+        elif filter_type == 'employment':
+            context.user_data['employment'] = user_text
+            await update.message.reply_text("Введите название должности для поиска:")
+            context.user_data['filter'] = 'search'
+        elif filter_type == 'search':
+            query = user_text
+            salary_from = context.user_data.get('salary_from')
+            salary_to = context.user_data.get('salary_to')
+            employment = context.user_data.get('employment')
 
-    query = user_text.split('salary_from:')[0].split('salary_to:')[0].split('employment:')[0].strip()
-
-    await update.message.reply_text(
-        f'Ищу вакансии по запросу: {query}, Зарплата от: {salary_from}, Зарплата до: {salary_to}, Занятость: {employment}')
-
+            await update.message.reply_text(
+                f'Ищу вакансии по запросу: {query}, Зарплата от: {salary_from}, Зарплата до: {salary_to}, Занятость: {employment}')
 
 
     #парсинг
