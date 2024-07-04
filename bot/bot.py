@@ -6,7 +6,7 @@ import requests
 
 #логирование
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levellevel)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
@@ -40,8 +40,10 @@ def insert_vacancy(cursor, vacancy):
             vacancy['area']['name'],
             vacancy['experience']['name']
         ))
+    else:
+        logger.info(f"Vacancy {vacancy['id']} already exists in the database.")
 
-#парсинг вакансий с hh.ru
+# Парсинг вакансий с hh.ru
 def parse_hh_vacancies(query):
     url = 'https://api.hh.ru/vacancies'
     params = {
@@ -49,6 +51,7 @@ def parse_hh_vacancies(query):
         'area': 1,  # Москва
         'per_page': 10
     }
+
     response = requests.get(url, params=params)
     data = response.json()
 
@@ -62,6 +65,7 @@ def parse_hh_vacancies(query):
     conn.commit()
     cursor.close()
     conn.close()
+    logger.info(f"Parsed and inserted vacancies for query '{query}'")
 
 #/start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -75,7 +79,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 #/help
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        'Доступные команды:\n/start - Начать диалог\n/help - Помощь\n/search - Поиск вакансий\n/info - Информация о боте\n/filters - Установить фильтры')
+        'Доступные команды:\n/start - Начать диалог\n/help - Помощь\n/search - Поиск вакансий\n/info - Информация о боте\n/filters - Установить фильтры\n/reset_filters - Сбросить фильтры')
     logger.info("Команда /help обработана")
 
 #/search
@@ -91,20 +95,22 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '/help - Получить список команд\n'
         '/search - Начать поиск вакансий\n'
         '/info - Получить информацию о боте\n'
-        '/filters - Установить фильтры'
+        '/filters - Установить фильтры\n'
+        '/reset_filters - Сбросить фильтры'
     )
     logger.info("Команда /info обработана")
 
 #/filters
 async def filters_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
-        [InlineKeyboardButton("Установить фильтры", callback_data='set_filters')]
+        [InlineKeyboardButton("Установить фильтры", callback_data='set_filters')],
+        [InlineKeyboardButton("Сбросить фильтры", callback_data='reset_filters')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text('Нажмите кнопку ниже, чтобы установить фильтры:', reply_markup=reply_markup)
+    await update.message.reply_text('Нажмите кнопку ниже, чтобы установить или сбросить фильтры:', reply_markup=reply_markup)
     logger.info("Команда /filters обработана")
 
-#обработка нажатия кнопки для установки фильтров
+#обработка нажатия кнопки для установки и сброса фильтров
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -112,6 +118,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if query.data == 'set_filters':
         await query.edit_message_text(text="Введите минимальную зарплату и тип занятости (Полная занятость/Частичная занятость/Стажировка):")
         context.user_data['setting_filters'] = True
+    elif query.data == 'reset_filters':
+        context.user_data.pop('min_salary', None)
+        context.user_data.pop('employment_type', None)
+        await query.edit_message_text(text="Фильтры сброшены.")
+        logger.info("Фильтры сброшены пользователем")
 
 #обработка текста
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -136,11 +147,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         #парсинг
         parse_hh_vacancies(user_text)
 
-        #поиск в БД и отправка результатов пользователю
+        #поиск в БД и отправка с фильтром
         min_salary = context.user_data.get('min_salary')
         employment_type = context.user_data.get('employment_type')
         vacancies = search_vacancies(user_text, min_salary, employment_type)
         total_vacancies = len(vacancies)
+
         await update.message.reply_text(f'Найдено {total_vacancies} вакансий по запросу: {user_text}')
 
         if vacancies:
@@ -172,9 +184,10 @@ def search_vacancies(job_title, min_salary=None, employment_type=None):
     results = cursor.fetchall()
     cursor.close()
     conn.close()
+    logger.info(f"Search query executed: found {len(results)} vacancies for query '{job_title}' with filters salary >= {min_salary}, employment = {employment_type}")
     return results
 
-#форматирование инф о вакансии
+#форматирование информации о вакансии
 def format_vacancy(vacancy):
     title, skills, work_format, salary, location, experience_level = vacancy
     return (f"Название: {title}\n"
@@ -190,7 +203,8 @@ async def set_commands(application):
         BotCommand("help", "Помощь"),
         BotCommand("search", "Поиск вакансий"),
         BotCommand("info", "Информация о боте"),
-        BotCommand("filters", "Установить фильтры")
+        BotCommand("filters", "Установить фильтры"),
+        BotCommand("reset_filters", "Сбросить фильтры")
     ]
     await application.bot.set_my_commands(commands)
     logger.info("Команды установлены")
@@ -205,6 +219,7 @@ def main():
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("info", info_command))
     application.add_handler(CommandHandler("filters", filters_command))
+    application.add_handler(CommandHandler("reset_filters", filters_command))  # Добавление команды сброса фильтров
 
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
