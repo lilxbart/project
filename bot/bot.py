@@ -1,7 +1,6 @@
 import logging
-from telegram import Update, ForceReply, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-
+from telegram import Update, ForceReply, BotCommand
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import psycopg2
 import requests
 
@@ -44,20 +43,13 @@ def insert_vacancy(cursor, vacancy):
         ))
 
 #парсинг с hh.ru
-def parse_hh_vacancies(query, salary_from=None, salary_to=None, employment=None):
+def parse_hh_vacancies(query):
     url = 'https://api.hh.ru/vacancies'
     params = {
         'text': query,
-        'area': 1,
+        'area': 1,  #Москва
         'per_page': 10
     }
-    if salary_from:
-        params['salary_from'] = salary_from
-    if salary_to:
-        params['salary_to'] = salary_to
-    if employment:
-        params['employment'] = employment
-
     response = requests.get(url, params=params)
     data = response.json()
 
@@ -87,6 +79,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         'Доступные команды:\n/start - Начать диалог\n/help - Помощь\n/search - Поиск вакансий\n/info - Информация о боте')
     logger.info("Команда /help обработана")
 
+#/search
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text('Введите название должности для поиска вакансий:')
+    logger.info("Команда /search обработана")
+
 #/info
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -98,70 +95,20 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     logger.info("Команда /info обработана")
 
-
-#/search
-async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        'Введите название должности для поиска вакансий или выберите фильтр ниже:',
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Указать зарплату", callback_data='filter_salary')],
-            [InlineKeyboardButton("Указать тип занятости", callback_data='filter_employment')],
-            [InlineKeyboardButton("Начать поиск", callback_data='start_search')]
-        ])
-    )
-    logger.info("Команда /search обработана")
-
-
-#обработка выбора фильтров
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == 'filter_salary':
-        await query.edit_message_text(text="Введите минимальную и максимальную зарплату через пробел:")
-        context.user_data['filter'] = 'salary'
-    elif query.data == 'filter_employment':
-        await query.edit_message_text(text="Введите тип занятости (например, full_time, part_time):")
-        context.user_data['filter'] = 'employment'
-    elif query.data == 'start_search':
-        await query.edit_message_text(text="Введите название должности для поиска:")
-        context.user_data['filter'] = 'search'
-
-
-#обработка текста с фильтрами
+#обработка текста
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_text = update.message.text
-
-    if 'filter' in context.user_data:
-        filter_type = context.user_data['filter']
-
-        if filter_type == 'salary':
-            salary_from, salary_to = map(int, user_text.split())
-            context.user_data['salary_from'] = salary_from
-            context.user_data['salary_to'] = salary_to
-            await update.message.reply_text("Введите название должности для поиска:")
-            context.user_data['filter'] = 'search'
-        elif filter_type == 'employment':
-            context.user_data['employment'] = user_text
-            await update.message.reply_text("Введите название должности для поиска:")
-            context.user_data['filter'] = 'search'
-        elif filter_type == 'search':
-            query = user_text
-            salary_from = context.user_data.get('salary_from')
-            salary_to = context.user_data.get('salary_to')
-            employment = context.user_data.get('employment')
-
-            await update.message.reply_text(
-                f'Ищу вакансии по запросу: {query}, Зарплата от: {salary_from}, Зарплата до: {salary_to}, Занятость: {employment}')
-
+    if user_text.startswith('/'):
+        return
+    await update.message.reply_text(f'Ищу вакансии по запросу: {user_text}')
 
     #парсинг
-    parse_hh_vacancies(query, salary_from, salary_to, employment)
+    parse_hh_vacancies(user_text)
 
     #поиск в бд и отправка результатов пользователю
-    vacancies = search_vacancies(query, salary_from, salary_to, employment)
+    vacancies = search_vacancies(user_text)
     total_vacancies = len(vacancies)
-    await update.message.reply_text(f'Найдено {total_vacancies} вакансий по запросу: {query}')
+    await update.message.reply_text(f'Найдено {total_vacancies} вакансий по запросу: {user_text}')
 
     if vacancies:
         for vacancy in vacancies:
@@ -171,28 +118,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.info(f"Сообщение '{user_text}' обработано")
 
 #поиск вакансий в бд
-def search_vacancies(job_title, salary_from=None, salary_to=None, employment=None):
+def search_vacancies(job_title):
     conn = connect_db()
     cursor = conn.cursor()
-
-    query = """
+    cursor.execute("""
         SELECT title, skills, work_format, salary, location, experience_level
         FROM vacancies
         WHERE title ILIKE %s
-    """
-    params = [f'%{job_title}%']
-
-    if salary_from is not None:
-        query += " AND salary >= %s"
-        params.append(salary_from)
-    if salary_to is not None:
-        query += " AND salary <= %s"
-        params.append(salary_to)
-    if employment is not None:
-        query += " AND work_format = %s"
-        params.append(employment)
-
-    cursor.execute(query, tuple(params))
+    """, (f'%{job_title}%',))
     results = cursor.fetchall()
     cursor.close()
     conn.close()
