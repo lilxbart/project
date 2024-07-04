@@ -1,6 +1,6 @@
 import logging
-from telegram import Update, ForceReply, BotCommand
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, ForceReply, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import psycopg2
 import requests
 
@@ -11,7 +11,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-#подключение к бд
+#подключение к БД
 def connect_db():
     return psycopg2.connect(
         dbname="work",
@@ -20,11 +20,10 @@ def connect_db():
         host="host.docker.internal"
     )
 
-#наличия вакансии в бд
+#проверка наличия вакансии в БД
 def vacancy_exists(cursor, vacancy_id):
     cursor.execute("SELECT 1 FROM vacancies WHERE id = %s", (vacancy_id,))
     return cursor.fetchone() is not None
-
 
 #вставка данных в таблицу
 def insert_vacancy(cursor, vacancy):
@@ -42,12 +41,12 @@ def insert_vacancy(cursor, vacancy):
             vacancy['experience']['name']
         ))
 
-#парсинг с hh.ru
+#парсинг вакансий с hh.ru
 def parse_hh_vacancies(query):
     url = 'https://api.hh.ru/vacancies'
     params = {
         'text': query,
-        'area': 1,  #Москва
+        'area': 1,  # Москва
         'per_page': 10
     }
     response = requests.get(url, params=params)
@@ -76,7 +75,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 #/help
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        'Доступные команды:\n/start - Начать диалог\n/help - Помощь\n/search - Поиск вакансий\n/info - Информация о боте')
+        'Доступные команды:\n/start - Начать диалог\n/help - Помощь\n/search - Поиск вакансий\n/info - Информация о боте\n/filters - Установить фильтры')
     logger.info("Команда /help обработана")
 
 #/search
@@ -91,47 +90,91 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '/start - Начать диалог\n'
         '/help - Получить список команд\n'
         '/search - Начать поиск вакансий\n'
-        '/info - Получить информацию о боте'
+        '/info - Получить информацию о боте\n'
+        '/filters - Установить фильтры'
     )
     logger.info("Команда /info обработана")
+
+#/filters
+async def filters_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    keyboard = [
+        [InlineKeyboardButton("Установить фильтры", callback_data='set_filters')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text('Нажмите кнопку ниже, чтобы установить фильтры:', reply_markup=reply_markup)
+    logger.info("Команда /filters обработана")
+
+#обработка нажатия кнопки для установки фильтров
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == 'set_filters':
+        await query.edit_message_text(text="Введите минимальную зарплату и тип занятости (Полная занятость/Частичная занятость/Стажировка):")
+        context.user_data['setting_filters'] = True
 
 #обработка текста
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_text = update.message.text
-    if user_text.startswith('/'):
-        return
-    await update.message.reply_text(f'Ищу вакансии по запросу: {user_text}')
 
-    #парсинг
-    parse_hh_vacancies(user_text)
-
-    #поиск в бд и отправка результатов пользователю
-    vacancies = search_vacancies(user_text)
-    total_vacancies = len(vacancies)
-    await update.message.reply_text(f'Найдено {total_vacancies} вакансий по запросу: {user_text}')
-
-    if vacancies:
-        for vacancy in vacancies:
-            await update.message.reply_text(format_vacancy(vacancy))
+    if context.user_data.get('setting_filters'):
+        try:
+            min_salary, employment_type = user_text.split(maxsplit=1)
+            context.user_data['min_salary'] = int(min_salary)
+            context.user_data['employment_type'] = employment_type
+            context.user_data['setting_filters'] = False
+            await update.message.reply_text(f'Фильтры установлены: минимальная зарплата - {min_salary}, тип занятости - {employment_type}')
+            logger.info("Фильтры установлены пользователем")
+        except ValueError:
+            await update.message.reply_text('Ошибка: пожалуйста, введите минимальную зарплату и тип занятости в формате "100000 Полная занятость".')
+            return
     else:
-        await update.message.reply_text('Вакансий не найдено.')
-    logger.info(f"Сообщение '{user_text}' обработано")
+        if user_text.startswith('/'):
+            return
+        await update.message.reply_text(f'Ищу вакансии по запросу: {user_text}')
 
-#поиск вакансий в бд
-def search_vacancies(job_title):
+        #парсинг
+        parse_hh_vacancies(user_text)
+
+        #поиск в БД и отправка результатов пользователю
+        min_salary = context.user_data.get('min_salary')
+        employment_type = context.user_data.get('employment_type')
+        vacancies = search_vacancies(user_text, min_salary, employment_type)
+        total_vacancies = len(vacancies)
+        await update.message.reply_text(f'Найдено {total_vacancies} вакансий по запросу: {user_text}')
+
+        if vacancies:
+            for vacancy in vacancies:
+                await update.message.reply_text(format_vacancy(vacancy))
+        else:
+            await update.message.reply_text('Вакансий не найдено.')
+        logger.info(f"Сообщение '{user_text}' обработано")
+
+#поиск вакансий в БД с учётом фильтров
+def search_vacancies(job_title, min_salary=None, employment_type=None):
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("""
+    query = """
         SELECT title, skills, work_format, salary, location, experience_level
         FROM vacancies
         WHERE title ILIKE %s
-    """, (f'%{job_title}%',))
+    """
+    params = [f'%{job_title}%']
+
+    if min_salary is not None:
+        query += " AND CAST(salary AS INTEGER) >= %s"
+        params.append(min_salary)
+    if employment_type is not None:
+        query += " AND work_format ILIKE %s"
+        params.append(f'%{employment_type}%')
+
+    cursor.execute(query, params)
     results = cursor.fetchall()
     cursor.close()
     conn.close()
     return results
 
-#инф. о  вакансии
+#форматирование инф о вакансии
 def format_vacancy(vacancy):
     title, skills, work_format, salary, location, experience_level = vacancy
     return (f"Название: {title}\n"
@@ -146,23 +189,24 @@ async def set_commands(application):
         BotCommand("start", "Начать диалог"),
         BotCommand("help", "Помощь"),
         BotCommand("search", "Поиск вакансий"),
-        BotCommand("info", "Информация о боте")
+        BotCommand("info", "Информация о боте"),
+        BotCommand("filters", "Установить фильтры")
     ]
     await application.bot.set_my_commands(commands)
     logger.info("Команды установлены")
 
 def main():
-    #аpplication и диспетчера
     application = Application.builder().token("6833575364:AAFxAHB7D2q1lrTNpguGcN8LbNKNv3H9Fs8").build()
 
-    #установка команд в меню
     application.add_handler(CommandHandler('set_commands', set_commands))
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("info", info_command))
+    application.add_handler(CommandHandler("filters", filters_command))
 
+    application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     application.job_queue.run_once(set_commands, when=0)
